@@ -1,6 +1,6 @@
 ThisBuild / version := "0.1.0-SNAPSHOT"
 
-ThisBuild / scalaVersion := "3.3.3"
+ThisBuild / scalaVersion := "3.3.7"
 
 lazy val root = (project in file("."))
   .settings(
@@ -14,8 +14,23 @@ lazy val root = (project in file("."))
       "io.circe"              %% "circe-generic"       % "0.14.9",
       "io.circe"              %% "circe-core"          % "0.14.9",
       "io.circe"              %% "circe-parser"        % "0.14.9",
-      "eu.timepit"            %% "refined"             % "0.11.2",
-      "com.github.pureconfig" %% "pureconfig-core"     % "0.17.7",
-      "ch.qos.logback"        % "logback-classic"      % "1.5.6"
+      "eu.timepit"                  %% "refined"                 % "0.11.2",
+      "com.github.pureconfig"       %% "pureconfig-core"         % "0.17.7",
+      "ch.qos.logback"               % "logback-classic"         % "1.5.6",
+      "com.softwaremill.sttp.tapir" %% "tapir-core"              % "1.11.13",
+      "com.softwaremill.sttp.tapir" %% "tapir-http4s-server"     % "1.11.13",
+      "com.softwaremill.sttp.tapir" %% "tapir-json-circe"        % "1.11.13",
+      "com.softwaremill.sttp.tapir" %% "tapir-swagger-ui-bundle" % "1.11.13",
+      "org.typelevel"               %% "munit-cats-effect"       % "2.0.0"   % Test,
+      "com.dimafeng"                %% "testcontainers-scala-munit" % "0.41.4" % Test,
+      "com.dimafeng"                %% "testcontainers-scala-kafka" % "0.41.4" % Test
     )
   )
+
+Test / fork := true
+Test / testOptions += Tests.Argument("--exclude-tags=integration")
+
+addCommandAlias(
+  "itTest",
+  "; set Test / testOptions := Seq(Tests.Argument(\"--include-tags=integration\")) ; testOnly *IntegrationSpec"
+)

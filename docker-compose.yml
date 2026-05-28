@@ -1,32 +1,21 @@
-# docker-compose.yml
-version: "3.7"
 services:
-  zookeeper:
-    restart: always
-    image: docker.io/bitnami/zookeeper:3.8
-    ports:
-      - "2181:2181"
-    volumes:
-      - "zookeeper-volume:/bitnami"
-    environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
   kafka:
+    image: apache/kafka:3.8.0
+    container_name: conduktor-kafka
     restart: always
-    image: docker.io/bitnami/kafka:3.3
     ports:
       - "9093:9093"
-    volumes:
-      - "kafka-volume:/bitnami"
     environment:
-      - KAFKA_BROKER_ID=1
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT
-      - KAFKA_CFG_LISTENERS=CLIENT://:9092,EXTERNAL://:9093
-      - KAFKA_CFG_ADVERTISED_LISTENERS=CLIENT://kafka:9092,EXTERNAL://localhost:9093
-      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=CLIENT
-    depends_on:
-      - zookeeper
-volumes:
-  kafka-volume:
-  zookeeper-volume:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "CONTROLLER://:9091,PLAINTEXT://:9092,EXTERNAL://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9091"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"

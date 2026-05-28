@@ -18,7 +18,7 @@ object Application extends IOApp.Simple:
 
   override def run: IO[Unit] = ConfigSource.default.loadF[IO, AppConfig].flatMap {
     case AppConfig(kafkaConfig, emberConfig) =>
-      val kafkaCtx = KafkaContext(kafkaConfig)
+      val kafkaCtx = KafkaContext[IO](kafkaConfig)
       val appResource = for {
         consumer <- KafkaConsumer.resource(kafkaCtx.consumerSettings)
         core <- Core[IO](consumer, kafkaCtx)

@@ -1,18 +1,20 @@
 package com.conduktor.people.http.routes
 
-import cats.Monad
-import org.http4s.dsl.Http4sDsl
-import org.http4s.server.Router
-import org.http4s.{HttpRoutes, Request, Response}
+import cats.Applicative
+import cats.implicits.*
+import sttp.tapir.*
+import sttp.tapir.server.ServerEndpoint
 
-class HealthRoutes[F[_]: Monad] private extends Http4sDsl[F]:
-  private val healthRoute: HttpRoutes[F] = HttpRoutes.of[F] {
-    case GET -> Root => Ok("Working !")
-  }
+class HealthRoutes[F[_]: Applicative]:
+  val endpoint: PublicEndpoint[Unit, Unit, String, Any] =
+    sttp.tapir.endpoint.get
+      .in("api" / "health")
+      .out(stringBody)
+      .summary("Liveness probe")
+      .tag("Health")
 
-  val routes: HttpRoutes[F] = Router(
-    "/health" -> healthRoute
-  )
+  val serverEndpoint: ServerEndpoint[Any, F] =
+    endpoint.serverLogicSuccess(_ => "Working !".pure[F])
 
 object HealthRoutes:
-  def apply[F[_]: Monad] = new HealthRoutes[F]
+  def apply[F[_]: Applicative]: HealthRoutes[F] = new HealthRoutes[F]

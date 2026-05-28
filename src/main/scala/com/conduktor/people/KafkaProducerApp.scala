@@ -1,85 +1,92 @@
 package com.conduktor.people
 
 import cats.effect.{IO, IOApp, Resource}
+import cats.implicits.*
+import com.conduktor.people.config.{AppConfig, KafkaConfig, KafkaTopicConfig}
+import com.conduktor.people.config.syntax.*
 import fs2.kafka.{KafkaProducer, ProducerRecord, ProducerRecords, ProducerSettings}
 import io.circe.{Json, parser}
-import org.apache.kafka.clients.admin.{AdminClient, NewTopic}
+import org.apache.kafka.clients.admin.{AdminClient, AdminClientConfig, NewTopic}
+import org.apache.kafka.common.errors.TopicExistsException
+import org.typelevel.log4cats.Logger
 import org.typelevel.log4cats.slf4j.Slf4jLogger
+import pureconfig.ConfigSource
 
 import java.util.Properties
+import java.util.concurrent.ExecutionException
 import scala.io.Source
 import scala.jdk.CollectionConverters.*
 
-object KafkaProducerApp extends IOApp.Simple {
+object KafkaProducerApp extends IOApp.Simple:
 
-  val logger = Slf4jLogger.getLogger[IO]
+  private val DataResource: String = "random-people-data.json"
+  private val RootField: String    = "ctRoot"
+  private val IdField: String      = "_id"
 
-  def run: IO[Unit] = {
+  private given logger: Logger[IO] = Slf4jLogger.getLogger[IO]
 
-    val topicName = "people-topic"
-    val bootstrapServers = "localhost:9093"
+  override def run: IO[Unit] =
+    for {
+      appConfig <- ConfigSource.default.loadF[IO, AppConfig]
+      kafkaCfg   = appConfig.kafkaConfig
+      _         <- ensureTopic(kafkaCfg)
+      people    <- loadPeople
+      _         <- publish(kafkaCfg, people)
+    } yield ()
 
-    val producerSettings = ProducerSettings[IO, String, String].withBootstrapServers(bootstrapServers)
-    val adminProps = new Properties()
-    adminProps.put("bootstrap.servers", bootstrapServers)
-    val adminResource = Resource.make { IO(AdminClient.create(adminProps)) }(client => IO(client.close()))
+  private def ensureTopic(cfg: KafkaConfig): IO[Unit] =
+    adminClient(cfg.bootstrapServers)
+      .use(createTopic(_, cfg.topic))
+      .recoverWith {
+        case e: ExecutionException if e.getCause.isInstanceOf[TopicExistsException] =>
+          Logger[IO].info(s"Topic '${cfg.topic.name}' already exists — skipping creation")
+      } *> Logger[IO].info(s"Topic '${cfg.topic.name}' is ready (${cfg.topic.numPartitions} partitions)")
 
-    def createTopic(adminClient: AdminClient): IO[Unit] = IO {
-      val newTopic = new NewTopic(topicName, 3, 1.toShort)
-      val createResult = adminClient.createTopics(List(newTopic).asJava)
-      createResult.all().get()
-      ()
-    }.handleErrorWith { error =>
-      logger.error(s"Error creating topic: $error") *> IO.unit
+  private def adminClient(bootstrapServers: String): Resource[IO, AdminClient] =
+    Resource.fromAutoCloseable(IO.blocking(AdminClient.create(adminProperties(bootstrapServers))))
+
+  private def adminProperties(bootstrapServers: String): Properties =
+    val props = new Properties()
+    props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers)
+    props
+
+  private def createTopic(admin: AdminClient, topic: KafkaTopicConfig): IO[Unit] =
+    IO.blocking {
+      admin
+        .createTopics(List(new NewTopic(topic.name, topic.numPartitions, topic.replicationFactor)).asJava)
+        .all()
+        .get()
+    }.void
+
+  private def loadPeople: IO[List[Json]] =
+    for {
+      raw    <- readClasspathResource(DataResource)
+      json   <- IO.fromEither(parser.parse(raw))
+      people <- IO.fromEither(json.hcursor.get[List[Json]](RootField))
+      _      <- Logger[IO].info(s"Loaded ${people.size} people from '$DataResource'")
+    } yield people
+
+  private def readClasspathResource(name: String): IO[String] =
+    Resource
+      .fromAutoCloseable(IO.blocking(Source.fromResource(name)))
+      .use(src => IO.blocking(src.mkString))
+
+  private def publish(cfg: KafkaConfig, people: List[Json]): IO[Unit] =
+    val records = people.flatMap(toRecords(cfg.topic, _))
+    KafkaProducer.resource(producerSettings(cfg)).use { producer =>
+      Logger[IO].info(s"Publishing ${records.size} records to '${cfg.topic.name}'") *>
+        producer.produce(ProducerRecords(records)).flatten.void *>
+        Logger[IO].info(s"Published ${records.size} records successfully")
     }
 
-    def produceToAllPartitions(id: String, message: String, producer: KafkaProducer[IO, String, String]): IO[Unit] = {
-      val partitions = List(0, 1, 2)
-      fs2.Stream
-        .emits(partitions)
-        .evalMap { partition =>
-          val producerRecord = ProducerRecord(topicName, id, message).withPartition(partition)
-          logger.info(s"Producing message with _id $id to partition $partition: $message") *>
-            producer.produce(ProducerRecords.one(producerRecord)).flatten
-        }
-        .compile
-        .drain
-    }
+  private def producerSettings(cfg: KafkaConfig): ProducerSettings[IO, String, String] =
+    ProducerSettings[IO, String, String]
+      .withBootstrapServers(cfg.producer.bootstrapServers)
+      .withClientId(cfg.producer.clientId)
 
-    def produceMessages: IO[Unit] = {
-      val jsonData = Source.fromResource("random-people-data.json").mkString
-      val parsedJson = parser.parse(jsonData) match {
-        case Right(json) => IO.pure(json)
-        case Left(error) => logger.error(s"Failed to parse JSON: $error") *>
-          IO.pure(Json.Null)
-      }
-
-      parsedJson.flatMap { json =>
-        json.hcursor.get[List[Json]]("ctRoot") match {
-          case Right(people) =>
-            KafkaProducer.resource(producerSettings).use { producer =>
-              fs2.Stream
-                .emits(people)
-                .evalMap { personJson =>
-                  val message = personJson.noSpaces
-                  val id = personJson.hcursor.get[String]("_id").getOrElse("unknown")
-                  produceToAllPartitions(id, message, producer)
-                }
-                .compile
-                .drain
-            }
-          case Left(error) => logger.error(s"Failed to extract ctRoot from JSON: $error") *>
-            IO.unit
-        }
-      }
+  private def toRecords(topic: KafkaTopicConfig, person: Json): List[ProducerRecord[String, String]] =
+    val id      = person.hcursor.get[String](IdField).getOrElse("unknown")
+    val message = person.noSpaces
+    (0 until topic.numPartitions).toList.map { partition =>
+      ProducerRecord(topic.name, id, message).withPartition(partition)
     }
-
-    adminResource.use { adminClient =>
-      for {
-        _ <- createTopic(adminClient)
-        _ <- logger.info(s"Topic '$topicName' successfully created with 3 partitions")
-        _ <- produceMessages
-      } yield ()
-    }
-  }
-}
